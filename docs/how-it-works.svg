@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 980" width="1000" height="980" font-family="'Red Hat Text', 'Red Hat Display', 'Overpass', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#151515"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="980" fill="#ffffff"/>
+  <rect x="0" y="0" width="1000" height="8" fill="#ee0000"/>
+
+  <!-- header -->
+  <text x="56" y="78" font-size="34" font-weight="700" fill="#151515">How it works</text>
+  <text x="56" y="114" font-size="20" fill="#4d4d4d">CRI-O OCI hook for RHSB-2026-012 on OpenShift</text>
+
+  <!-- cluster boundary -->
+  <rect x="40" y="146" width="920" height="452" rx="6" fill="#f2f2f2" stroke="#c7c7c7" stroke-dasharray="6 5"/>
+  <text x="60" y="178" font-size="15" font-weight="700" fill="#6a6e73" letter-spacing="1.5">OPENSHIFT NODE (RHCOS)</text>
+
+  <!-- step boxes: 1 TL, 2 TR, 3 BR, 4 BL -->
+  <g>
+    <rect x="72" y="198" width="380" height="170" rx="4" fill="#ffffff" stroke="#d2d2d2"/>
+    <rect x="72" y="198" width="6" height="170" fill="#ee0000"/>
+    <text x="100" y="236" font-size="15" font-weight="700" fill="#ee0000" letter-spacing="1">STEP 1</text>
+    <text x="100" y="270" font-size="25" font-weight="700" fill="#151515">DaemonSet installs hook</text>
+    <text x="100" y="304" font-size="18" fill="#4d4d4d">Uses the release <tspan font-family="'Red Hat Mono', Menlo, Consolas, monospace" fill="#151515">cli</tspan> image,</text>
+    <text x="100" y="330" font-size="18" fill="#4d4d4d">already present in the mirror</text>
+
+    <rect x="548" y="198" width="380" height="170" rx="4" fill="#ffffff" stroke="#d2d2d2"/>
+    <rect x="548" y="198" width="6" height="170" fill="#ee0000"/>
+    <text x="576" y="236" font-size="15" font-weight="700" fill="#ee0000" letter-spacing="1">STEP 2</text>
+    <text x="576" y="270" font-size="25" font-weight="700" fill="#151515">Hook written to tmpfs</text>
+    <text x="576" y="304" font-size="16" font-family="'Red Hat Mono', Menlo, Consolas, monospace" fill="#151515">/run/containers/oci/hooks.d</text>
+    <text x="576" y="332" font-size="18" fill="#4d4d4d">CRI-O loads it live</text>
+
+    <rect x="548" y="408" width="380" height="170" rx="4" fill="#ffffff" stroke="#d2d2d2"/>
+    <rect x="548" y="408" width="6" height="170" fill="#ee0000"/>
+    <text x="576" y="446" font-size="15" font-weight="700" fill="#ee0000" letter-spacing="1">STEP 3</text>
+    <text x="576" y="480" font-size="25" font-weight="700" fill="#151515">New container created</text>
+    <text x="576" y="514" font-size="18" fill="#4d4d4d">CRI-O runs the prestart hook</text>
+    <text x="576" y="540" font-size="18" fill="#4d4d4d">before the workload starts</text>
+
+    <rect x="72" y="408" width="380" height="170" rx="4" fill="#ffffff" stroke="#d2d2d2"/>
+    <rect x="72" y="408" width="6" height="170" fill="#ee0000"/>
+    <text x="100" y="446" font-size="15" font-weight="700" fill="#ee0000" letter-spacing="1">STEP 4</text>
+    <text x="100" y="480" font-size="25" font-weight="700" fill="#151515">Trust store cleaned</text>
+    <text x="100" y="514" font-size="18" fill="#4d4d4d">Only in the container's writable</text>
+    <text x="100" y="540" font-size="18" fill="#4d4d4d">layer; the image is unchanged</text>
+  </g>
+
+  <g stroke="#151515" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <path d="M456 283 H542"/>
+    <path d="M738 372 V402"/>
+    <path d="M544 493 H458"/>
+  </g>
+
+  <!-- before / after -->
+  <text x="56" y="652" font-size="22" font-weight="700" fill="#151515">Container trust store</text>
+
+  <rect x="56" y="672" width="400" height="236" rx="4" fill="#ffffff" stroke="#c9190b" stroke-width="2"/>
+  <rect x="56" y="672" width="400" height="44" rx="4" fill="#faeae8"/>
+  <text x="78" y="701" font-size="16" font-weight="700" fill="#a30000" letter-spacing="1">BEFORE</text>
+  <g font-size="18" fill="#151515">
+    <text x="78" y="748"><tspan fill="#c9190b" font-weight="700">✕</tspan>  emSign Root TLS CA - G3</text>
+    <text x="78" y="778"><tspan fill="#c9190b" font-weight="700">✕</tspan>  emSign ECC Root CA - G3</text>
+    <text x="78" y="808"><tspan fill="#c9190b" font-weight="700">✕</tspan>  emSign Root CS CA - G3</text>
+    <text x="78" y="838"><tspan fill="#c9190b" font-weight="700">✕</tspan>  AAA Certificate Services</text>
+    <text x="78" y="880" fill="#6a6e73">+ public CAs, internal CAs</text>
+  </g>
+
+  <g stroke="#151515" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <path d="M466 790 H534"/>
+  </g>
+
+  <rect x="544" y="672" width="400" height="236" rx="4" fill="#ffffff" stroke="#3e8635" stroke-width="2"/>
+  <rect x="544" y="672" width="400" height="44" rx="4" fill="#f3faf2"/>
+  <text x="566" y="701" font-size="16" font-weight="700" fill="#1e4f18" letter-spacing="1">AFTER</text>
+  <g font-size="18" fill="#151515">
+    <text x="566" y="748"><tspan fill="#3e8635" font-weight="700">✓</tspan>  Compromised roots removed</text>
+    <text x="566" y="778"><tspan fill="#3e8635" font-weight="700">✓</tspan>  Public CAs unchanged</text>
+    <text x="566" y="808"><tspan fill="#3e8635" font-weight="700">✓</tspan>  Internal CAs unchanged</text>
+    <text x="566" y="838"><tspan fill="#3e8635" font-weight="700">✓</tspan>  Java cacerts replaced</text>
+    <text x="566" y="880" fill="#6a6e73">RHEL, Debian, Alpine, SUSE, certifi</text>
+  </g>
+
+  <text x="56" y="950" font-size="15" fill="#6a6e73">Temporary mitigation. Remove after the OpenShift z-stream and UBI image rebuilds.</text>
+</svg>

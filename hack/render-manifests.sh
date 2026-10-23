@@ -1,7 +1,7 @@
 #!/bin/bash
 # Renders rendered/rhsb-2026-012-hook.yaml (Namespace, SA, SCC binding, ConfigMap, DaemonSet).
 #
-#   IMAGE=$(oc adm release info --image-for=cli) ./deploy/render.sh
+#   make manifests IMAGE=$(oc adm release info --image-for=cli)
 #
 # IMAGE      any image with bash + coreutils already in your mirror; the release's cli
 #            image always is. Defaults to a placeholder you must replace.

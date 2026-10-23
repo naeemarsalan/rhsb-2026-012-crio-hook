@@ -1,78 +1,94 @@
 # rhsb-2026-012-crio-hook
 
-A temporary, low-touch mitigation for RHSB-2026-012 (eMudhra CA compromise) on OpenShift
-clusters that cannot be patched yet.
+Temporary mitigation for [RHSB-2026-012](https://access.redhat.com/security/vulnerabilities/RHSB-2026-012)
+(eMudhra CA compromise) on OpenShift Container Platform clusters that cannot be updated yet.
 
-## The problem
+> **Note:** This is not an official Red Hat project and is not supported by Red Hat.
+> The supported fix is the patched `ca-certificates` package and the OpenShift z-stream
+> that ships it.
 
-Every container image ships its own CA bundle, so patching the node does not fix the pods.
-In an audit of two clusters, 139 of 155 and 117 of 124 running images still trusted the
-compromised roots. The OCP/RHCOS z-streams (4.12 to 4.22) are not out yet, and rebuilding
-every image on the patched UBI takes time.
+## Overview
 
-## How it works
+Each container image includes its own CA trust store. Updating the node does not change
+the trust store inside running workloads, and rebuilding every image takes time.
 
-A DaemonSet places an OCI prestart hook on each node. CRI-O runs the hook for every new
-container, and the hook removes the 4 compromised roots from that container's own trust store.
+This project installs a CRI-O OCI hook on each node. When a container is created, the hook
+removes the compromised root certificates from that container's trust store. Container
+images, pod specifications and node configuration are not modified.
 
-```mermaid
-flowchart LR
-    A["oc apply<br/>DaemonSet"] --> B["Hook copied to<br/>/run/containers/oci/hooks.d<br/>(tmpfs on each node)"]
-    B --> C["New container starts"]
-    C --> D["CRI-O runs the<br/>prestart hook"]
-    D --> E["4 roots removed from the<br/>container's writable layer"]
-    E --> F["Container runs.<br/>Image unchanged"]
-```
+![How it works](docs/how-it-works.png)
 
-Roots removed: emSign Root TLS CA - G3, emSign ECC Root CA - G3, emSign Root CS CA - G3,
-AAA Certificate Services. Nothing else is touched, so internal CAs baked into an image stay.
+Certificates removed:
 
-Trust stores covered: RHEL/UBI, Debian/Ubuntu, Alpine and SUSE bundles, the OpenSSL hash
-directory, and Python certifi. Java `cacerts` is replaced with the copy from the patched UBI 9
-image. The hook always exits 0, so it never stops a container from starting.
+| Root CA | SHA-256 fingerprint |
+|---|---|
+| emSign Root TLS CA - G3 | `7DD78D5F...2746ED8D` |
+| emSign ECC Root CA - G3 | `86A1ECBA...A36BBE6B` |
+| emSign Root CS CA - G3 | `F2EDAAFF...DABA34A5` |
+| AAA Certificate Services | `D7A7A0FB...EA699EF4` |
 
-The DaemonSet runs the cluster's own `cli` release image, which is already in every mirror
-registry. Nothing new needs to be mirrored.
+Supported trust stores: RHEL and UBI, Debian and Ubuntu, Alpine, SUSE, the OpenSSL hash
+directory, Python `certifi`, and Java `cacerts` (replaced with the copy from a patched
+UBI 9 image).
 
-## Deploy and remove
+## Prerequisites
+
+- OpenShift Container Platform 4.x with CRI-O
+- `cluster-admin` access
+- `oc` and `podman` on the workstation that renders the manifest
+
+No additional images are required. The DaemonSet uses the `cli` image from the cluster's
+release payload, which is already available in disconnected mirror registries.
+
+## Install
 
 ```bash
-IMAGE=$(oc adm release info --image-for=cli) ./deploy/render.sh   # writes rendered/rhsb-2026-012-hook.yaml
-oc apply -f rendered/rhsb-2026-012-hook.yaml                      # install
-oc delete -f rendered/rhsb-2026-012-hook.yaml                     # remove
+make deploy IMAGE=$(oc adm release info --image-for=cli)
 ```
 
-After the install, restart the pods that make outbound TLS calls. `./test/podman-test.sh`
-shows the before and after on a workstation.
+The hook applies to containers created after installation. Restart workloads that make
+outbound TLS connections.
 
-## Pros and cons
+## Verify
 
-| Pros | Cons |
+```bash
+make status
+```
+
+Each line in the log shows a container ID and the trust store files that were changed.
+To test locally before you install, run `make test`.
+
+## Uninstall
+
+```bash
+make undeploy
+```
+
+Uninstall after the cluster is updated to the fixed z-stream and workload images are
+rebuilt on the current UBI. After that, the hook makes no changes.
+
+## Considerations
+
+| Benefit | Limitation |
 |---|---|
-| No image rebuild, no pod spec change | Only affects containers started after the install |
-| No MachineConfig, no node reboot, no CRI-O restart | Does not touch roots compiled into binaries (Node.js built-in store, Rust webpki-roots, some Go distroless images) |
-| No admission webhook | Custom OCI hooks are a standard CRI-O feature, but not a Red Hat supported configuration |
-| Nothing new to mirror | Needs a privileged DaemonSet |
-| Rollback is `oc delete -f`. The hook lives in tmpfs and is gone after a reboot | While the DaemonSet exists, it puts the hook back after every reboot |
-| Keeps custom and internal CAs | |
+| No image rebuild or pod spec change | Applies only to containers created after install |
+| No MachineConfig, node reboot or CRI-O restart | Does not change CA lists compiled into binaries (Node.js, Rust `webpki-roots`, some Go images) |
+| No new images to mirror | Requires a privileged DaemonSet |
+| Keeps internal and custom CAs | Custom OCI hooks are not a supported OpenShift configuration |
+| Removed with `make undeploy`; hook files live in tmpfs | The DaemonSet reinstalls the hook after a node reboot until it is removed |
 
-## Tested
+## Testing
 
-- podman: old ubi9, old Debian with Python (CAfile and CApath), OpenJDK 21. All went from
-  exposed to blocked. redhat.com, quay.io, github.com and letsencrypt.org still connect.
-- OCP 4.20 single node, SELinux enforcing: an old ubi9 pod went from HTTP 200 to `curl` rc 60
-  after the DaemonSet was applied. quay.io still returned 200. No AVC denials, no CRI-O restart.
-  `oc delete` removed the hook.
+| Environment | Result |
+|---|---|
+| podman: UBI 9 (pre-fix), Debian Python 3.11, OpenJDK 21 | Connections that use the compromised roots fail; other sites still connect |
+| OpenShift 4.20, SELinux enforcing | Pod connection changed from HTTP 200 to certificate error after install; no AVC denials; no CRI-O restart |
 
-## When to remove it
+## Related mitigations
 
-Delete the DaemonSet once the patched OCP z-stream is rolled out and your images are rebuilt
-on the current UBI (RHSA-2026:88459 for RHEL 9, RHSA-2026:88550 for RHEL 8). At that point the
-hook finds nothing to remove anyway.
+- Update `ca-certificates` on the mirror host that runs `oc-mirror`. A reboot is not required.
+- If the egress proxy inspects TLS, remove the same roots from the proxy trust store.
 
-## Also worth doing
+## License
 
-- Patch the oc-mirror bastion: `dnf update ca-certificates`, no reboot.
-- If the egress proxy inspects TLS, remove the 4 roots from its upstream trust store. That
-  covers the binaries the hook cannot reach.
-- A passive firewall cannot help here: TLS 1.3 encrypts the certificate chain.
+Apache License 2.0. See [LICENSE](LICENSE).
