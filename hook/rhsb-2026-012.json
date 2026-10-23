@@ -1,0 +1,1 @@
+{"version":"1.0.0","hook":{"path":"/usr/bin/bash","args":["bash","/run/rhsb/rhsb-2026-012-scrub"],"env":["RHSB_LOG=/run/rhsb/hook.log"]},"when":{"always":true},"stages":["prestart"]}
