@@ -93,8 +93,10 @@ spec:
           install -m 644 /hook/cacerts /host-run/rhsb-2026-012/cacerts
           install -m 644 /hook/rhsb-2026-012.json /host-run/containers/oci/hooks.d/rhsb-2026-012.json
           echo "hook installed on \$NODE"
-          # Uninstall when the DaemonSet is deleted (oc delete -f ... is the rollback)
-          trap 'rm -f /host-run/containers/oci/hooks.d/rhsb-2026-012.json; echo "hook removed"; exit 0' TERM
+          # Uninstall when the DaemonSet is deleted. Remove the hook config first,
+          # then wait for CRI-O to drop it before deleting the script it runs.
+          trap 'rm -f /host-run/containers/oci/hooks.d/rhsb-2026-012.json; sleep 5
+                rm -rf /host-run/rhsb-2026-012; echo "hook removed"; exit 0' TERM
           tail -F /host-run/rhsb-2026-012/hook.log 2>/dev/null & wait
         env:
         - name: NODE

@@ -1,89 +1,100 @@
 #!/bin/bash
-# RHSB-2026-012 OCI prestart hook: scrub the compromised eMudhra/AAA roots out of
-# every new container's *own* trust store, in that container's writable layer.
-#   - no image rebuild, no pod spec change, no admission webhook
-#   - keeps any custom CAs the image ships (only the 4 roots are removed)
-#   - covers RHEL/UBI, Debian/Ubuntu, Alpine, SUSE bundles, OpenSSL hash dirs,
-#     and Python certifi copies. Java keystores (binary) are replaced with a
-#     known-good cacerts when RHSB_JAVA_CACERTS points at one (e.g. extracted
-#     from a patched UBI); otherwise they are only logged.
-# Runs on the host (CRI-O / podman), reads OCI state JSON on stdin.
-# Never fails the container: every error path exits 0.
+# OCI prestart hook for RHSB-2026-012.
+#
+# Removes the compromised eMudhra and AAA root CAs from a new container's trust
+# stores. Only the container's writable layer changes; the image does not.
+# The hook always exits 0, so it never blocks a container from starting.
+
 LOG=${RHSB_LOG:-/var/log/rhsb-2026-012-hook.log}
-# last base64 line of each root (its signature): unique, and matches every PEM copy
-SIGS='rvmsmfqPr5E7ecwXb6kXA5LTFd6rjwTuV3sCMQC9w6ZSbVq1mveMO6dKFziOzClT
+
+# Last base64 line (the signature) of each root. It is unique to the certificate
+# and appears in every PEM copy of it.
+BAD=$'rvmsmfqPr5E7ecwXb6kXA5LTFd6rjwTuV3sCMQC9w6ZSbVq1mveMO6dKFziOzClT
 rv4jJyV01QaxGn0HErZ8gjHkngqe+tcFogIxAPTdW0hBmrGjhxBWdv9mZNdVFiJ4
 l2D4kF501KKaU73yqWjgom7C12yxow+ev+to51byrvLjKzg6CYG1a4XXvi3tPxq3
 CUfvO6wIBHxcmbHtRwfSAjEAnbpV/KlK6O3t5nYBQnvI+GDZjVGLVTv7jHvrZQnD'
-trap 'exit 0' ERR
 
-state=$(cat)
-bundle=$(sed -n 's/.*"bundle"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$state")
-id=$(sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$state")
-[ -f "$bundle/config.json" ] || exit 0
-root=$(tr -d '\n' < "$bundle/config.json" |
-       sed -n 's/.*"root"[[:space:]]*:[[:space:]]*{[^}]*"path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-case "$root" in /*) ;; *) root="$bundle/$root" ;; esac
-root=$(realpath -e "$root" 2>/dev/null) || exit 0
-log() { echo "$(date -u +%FT%TZ) ${id:0:12} $*" >> "$LOG" 2>/dev/null; }
+# Same roots, matched by subject name inside binary Java keystores.
+BAD_JAVA='emSign Root TLS CA - G3|emSign ECC Root CA - G3|emSign Root CS CA - G3|AAA Certificate Services'
 
-# path inside the container -> host path, refusing anything that escapes the rootfs
-inroot() { local p; p=$(realpath -m "$root$1" 2>/dev/null) || return 1
-           case "$p" in "$root"/*) echo "$p" ;; *) return 1 ;; esac; }
+log()     { echo "$(date -u +%FT%TZ) ${id:0:12} $*" >> "$LOG"; }
+has_bad() { grep -qF -- "$BAD" "$1"; }
+# A regular file whose real path stays inside the container. This stops an
+# image symlink such as /etc/ssl/cert.pem -> /etc/shadow from reaching the host.
+inside()  { [ -f "$1" ] && [ ! -L "$1" ] && [[ $(realpath "$1") == "$root"/* ]]; }
 
-scrub_pem() { # $1 = container path of a PEM bundle
-  local f; f=$(inroot "$1") || return 0
-  [ -f "$f" ] && [ ! -L "$f" ] && grep -qF -- "$SIGS" "$f" || return 0
-  awk -v sigs="$SIGS" '
-    BEGIN { n = split(sigs, s, "\n"); for (i = 1; i <= n; i++) bad[s[i]] = 1 }
-    /-----BEGIN CERTIFICATE-----/ { inb = 1; blk = $0 "\n"; drop = 0; next }
-    inb { blk = blk $0 "\n"; if ($0 in bad) drop = 1
-          if (/-----END CERTIFICATE-----/) { inb = 0; if (!drop) printf "%s", blk; else hit++ }
-          next }
-    { print }
-    END { exit hit ? 0 : 1 }' "$f" > "$f.rhsb.$$" &&
-    { chmod --reference="$f" "$f.rhsb.$$"; mv -f "$f.rhsb.$$" "$f"; log "scrubbed $1"; } ||
-    rm -f "$f.rhsb.$$"
+# Print a PEM file without the certificates that end in a bad signature line.
+drop_bad() {
+  awk -v bad="$BAD" '
+    BEGIN       { split(bad, b, "\n"); for (i in b) skip[b[i]] }
+    /^-----BEGIN/ { pem = ""; keep = 1; in_pem = 1 }
+    in_pem      { pem = pem $0 "\n"; line = $0; sub(/\r$/, "", line)
+                  if (line in skip) keep = 0
+                  if (/^-----END/) { in_pem = 0; if (keep) printf "%s", pem }
+                  next }
+                { print }' "$1"
 }
 
-for p in /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
-         /etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt \
-         /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem \
-         /etc/ssl/ca-bundle.pem /var/lib/ca-certificates/ca-bundle.pem; do
-  scrub_pem "$p"
+# Follow a symlink inside the container: absolute targets are relative to the
+# container root, not the host.
+resolve() {
+  local p=$1 n t
+  for n in 1 2 3 4 5; do
+    [ -L "$p" ] || break
+    t=$(readlink "$p")
+    case $t in /*) p=.$t ;; *) p=$(dirname "$p")/$t ;; esac
+  done
+  echo "$p"
+}
+
+# The OCI state on stdin names the bundle; its config.json names the rootfs.
+state=$(tr -d '\n')
+id=$(grep -o '"id": *"[^"]*"' <<<"$state" | cut -d'"' -f4)
+bundle=$(grep -o '"bundle": *"[^"]*"' <<<"$state" | cut -d'"' -f4)
+root=$(tr -d '\n' < "$bundle/config.json" 2>/dev/null |
+       grep -o '"root": *{[^}]*}' | grep -o '"path": *"[^"]*"' | cut -d'"' -f4)
+[[ $root == /* ]] || root=$bundle/$root
+root=$(realpath -e "$root" 2>/dev/null) && cd "$root" || exit 0
+
+# PEM bundles, relative to the container root (the working directory). The
+# globs expand here, after the cd.
+BUNDLES=(
+  etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem        # RHEL, UBI
+  etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt  # RHEL, UBI
+  etc/ssl/certs/ca-certificates.crt                       # Debian, Ubuntu, Alpine
+  etc/ssl/cert.pem                                        # Alpine
+  etc/ssl/ca-bundle.pem                                   # SUSE
+  var/lib/ca-certificates/ca-bundle.pem                   # SUSE
+  {usr,usr/local,opt/app-root}/lib*/python3*/site-packages/{,pip/_vendor/}certifi/cacert.pem
+)
+KEYSTORES=(
+  etc/pki/ca-trust/extracted/java/cacerts                 # RHEL, UBI
+  etc/ssl/certs/java/cacerts                              # Debian, Ubuntu
+)
+
+# 1. PEM bundles: rewrite in place without the bad roots.
+for f in "${BUNDLES[@]}"; do
+  inside "$f" && has_bad "$f" || continue
+  clean=$(drop_bad "$f") && [ -n "$clean" ] || continue
+  printf '%s\n' "$clean" > "$f" && log "removed bad roots from /$f"
 done
-# language-bundled copies that ignore the OS store (Python certifi, pip's vendored certifi)
-for f in "$root"/usr/lib/python3*/site-packages/certifi/cacert.pem \
-         "$root"/usr/lib64/python3*/site-packages/certifi/cacert.pem \
-         "$root"/usr/local/lib/python3*/site-packages/certifi/cacert.pem \
-         "$root"/usr/local/lib/python3*/site-packages/pip/_vendor/certifi/cacert.pem \
-         "$root"/usr/lib/python3*/site-packages/pip/_vendor/certifi/cacert.pem \
-         "$root"/opt/app-root/lib*/python3*/site-packages/certifi/cacert.pem; do
-  [ -f "$f" ] && scrub_pem "${f#"$root"}"
-done
-# OpenSSL CApath (Debian/Alpine /etc/ssl/certs: per-cert files + <hash>.0 links)
-if d=$(inroot /etc/ssl/certs) && [ -d "$d" ] && [ ! -L "$d" ]; then
-  for c in "$d"/*.pem "$d"/*.crt "$(inroot /usr/share/ca-certificates)"/*/*.crt; do
-    [ -f "$c" ] || continue
-    t=$c; [ -L "$c" ] && { t=$(inroot "$(readlink "$c" | sed "s|^\([^/]\)|/etc/ssl/certs/\1|")") || continue; }
-    [ -f "$t" ] && grep -qF -- "$SIGS" "$t" || continue
-    b=$(basename "$c"); b=${b%.*}
-    for l in "$d"/*; do
-      [ -L "$l" ] || continue
-      case "$(readlink "$l")" in "$b".pem|"$b".crt|*/"$b".crt|*/"$b".pem) rm -f "$l"; log "removed /etc/ssl/certs/$(basename "$l")" ;; esac
-    done
-    case "$c" in "$d"/*) rm -f "$c"; log "removed /etc/ssl/certs/$(basename "$c")" ;; esac
+
+# 2. OpenSSL hash directory (Debian, Alpine): delete the entries, including the
+#    <hash>.0 links, that resolve to a single bad root.
+if [[ $(realpath etc/ssl/certs 2>/dev/null) == "$root"/* ]]; then
+  for e in etc/ssl/certs/*; do
+    t=$(resolve "$e")
+    [ -f "$t" ] && [ "$(grep -c '^-----BEGIN' "$t")" = 1 ] && has_bad "$t" || continue
+    rm -f "$e" && log "deleted /$e"
   done
 fi
-# Java: binary keystore -> swap in a known-good copy if one was provided
-for p in /etc/pki/ca-trust/extracted/java/cacerts /etc/ssl/certs/java/cacerts; do
-  f=$(inroot "$p") || continue
-  [ -f "$f" ] && [ ! -L "$f" ] || continue
-  if [ -f "${RHSB_JAVA_CACERTS:-}" ]; then
-    cmp -s "$RHSB_JAVA_CACERTS" "$f" ||
-      { cp -f "$RHSB_JAVA_CACERTS" "$f" && chmod 644 "$f" && log "replaced $p"; }
-  else
-    log "java keystore $p not changed (RHSB_JAVA_CACERTS unset)"
-  fi
-done
+
+# 3. Java keystores are binary: replace them with the patched copy, if provided.
+if [ -f "${RHSB_JAVA_CACERTS:-}" ]; then
+  for f in "${KEYSTORES[@]}"; do
+    inside "$f" && grep -qaE "$BAD_JAVA" "$f" || continue
+    cat "$RHSB_JAVA_CACERTS" > "$f" && log "replaced /$f"
+  done
+fi
+
 exit 0

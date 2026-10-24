@@ -56,7 +56,7 @@ make status
 ```
 
 Each line in the log shows a container ID and the trust store files that were changed.
-To test locally before you install, run `make test`.
+To test locally before you install, run `make test` and `make fuzz`.
 
 ## Uninstall
 
@@ -75,14 +75,23 @@ rebuilt on the current UBI. After that, the hook makes no changes.
 | No MachineConfig, node reboot or CRI-O restart | Does not change CA lists compiled into binaries (Node.js, Rust `webpki-roots`, some Go images) |
 | No new images to mirror | Requires a privileged DaemonSet |
 | Keeps internal and custom CAs | Custom OCI hooks are not a supported OpenShift configuration |
-| Removed with `make undeploy`; hook files live in tmpfs | The DaemonSet reinstalls the hook after a node reboot until it is removed |
+| Removed with `make undeploy`; hook files live in tmpfs | After a node reboot, containers that start before the DaemonSet pod (about 50 seconds) are not cleaned |
+
+The cluster network operator builds the cluster-wide trusted CA bundle from its own
+container. When it restarts with the hook installed, the injected `trusted-ca` ConfigMaps
+also lose the compromised roots, and operators that watch them restart once.
 
 ## Testing
 
-| Environment | Result |
+| Test | Result |
 |---|---|
-| podman: UBI 9 (pre-fix), Debian Python 3.11, OpenJDK 21 | Connections that use the compromised roots fail; other sites still connect |
-| OpenShift 4.20, SELinux enforcing | Pod connection changed from HTTP 200 to certificate error after install; no AVC denials; no CRI-O restart |
+| `make fuzz`: 1000 random container layouts | Hook always exits 0, never writes outside the container, keeps every other certificate |
+| `make test`: podman, UBI 9 before the fix | Connection to a site that chains to a compromised root fails; other sites connect |
+| `hack/test-openshift.sh` on OpenShift 4.20.27 (AWS, 3 control plane, 3 workers) | UBI 9, Debian Python and Java 21 blocked; Node.js 20 not blocked (built-in CA list) |
+| OpenShift conformance suite, before and after install | Same result: 7 failures before, 7 after, none caused by the hook |
+| Restart of all 96 platform workloads | No crash loops, all cluster operators available |
+
+Details are in [docs/validation.md](docs/validation.md).
 
 ## Related mitigations
 

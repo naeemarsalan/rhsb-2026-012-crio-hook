@@ -1,7 +1,7 @@
 IMAGE ?= REPLACE_WITH_oc_adm_release_info_--image-for=cli
 MANIFEST := rendered/rhsb-2026-012-hook.yaml
 
-.PHONY: manifests deploy undeploy status test clean
+.PHONY: manifests deploy undeploy status test fuzz clean
 
 manifests: ## Render the DaemonSet manifest (set IMAGE to the release cli image)
 	IMAGE=$(IMAGE) ./hack/render-manifests.sh
@@ -19,6 +19,9 @@ status: ## Show installer pods and recent hook activity
 
 test: ## Local before/after check with podman
 	./hack/test-podman.sh
+
+fuzz: ## Run the hook against 1000 random container layouts (needs certs/)
+	./hack/fuzz-hook.py certs/bad certs/good.pem 1000
 
 clean:
 	rm -rf rendered
